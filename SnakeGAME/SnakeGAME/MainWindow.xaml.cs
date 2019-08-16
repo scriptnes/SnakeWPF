@@ -1,6 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
+using System.Speech.Synthesis;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
@@ -12,6 +15,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
+using System.Xml.Serialization;
 
 namespace SnakeGAME
 {
@@ -20,11 +24,13 @@ namespace SnakeGAME
     /// </summary>
     public partial class MainWindow : Window
     {
+        private SpeechSynthesizer speechSynthesizer = new SpeechSynthesizer();
         private System.Windows.Threading.DispatcherTimer gameTickTimer = new System.Windows.Threading.DispatcherTimer();
         const int SnakeSquareSize = 20;
         const int SnakeStartLength = 3;
         const int SnakeStartSpeed = 400;
         const int SnakeSpeedThreshold = 100;
+        const int MaxHighscoreListEntryCount = 5;
         private SolidColorBrush snakeBodyBrush = Brushes.Green;
         private SolidColorBrush snakeHeadBrush = Brushes.YellowGreen;
         private List<SnakePart> snakeParts = new List<SnakePart>();
@@ -40,6 +46,7 @@ namespace SnakeGAME
         {
             InitializeComponent();
             gameTickTimer.Tick += GameTickTimer_Tick;
+            LoadHighscoreList();
         }
 
         private void GameTickTimer_Tick(object sender, EventArgs e)
@@ -160,6 +167,10 @@ namespace SnakeGAME
 
         private void StartNewGame()
         {
+            bdrWelcomeMessage.Visibility = Visibility.Collapsed;
+            bdrHighscoreList.Visibility = Visibility.Collapsed;
+            bdrEndOfGame.Visibility = Visibility.Collapsed;
+
             // Remove potential dead snake parts and leftover food...
             foreach (SnakePart snakeBodyPart in snakeParts)
             {
@@ -297,12 +308,61 @@ namespace SnakeGAME
 
         private void EndGame()
         {
+            bool isNewHighscore = false;
+            if (currentScore > 0)
+            {
+                int lowestHighscore = (this.HighscoreList.Count > 0 ? this.HighscoreList.Min(x => x.Score) : 0);
+                if ((currentScore > lowestHighscore) || (this.HighscoreList.Count < MaxHighscoreListEntryCount))
+                {
+                    bdrNewHighscore.Visibility = Visibility.Visible;
+                    txtPlayerName.Focus();
+                    isNewHighscore = true;
+                }
+            }
+            if (!isNewHighscore)
+            {
+                tbFinalScore.Text = currentScore.ToString();
+                bdrEndOfGame.Visibility = Visibility.Visible;
+            }
             gameTickTimer.IsEnabled = false;
-            MessageBox.Show("Oooops, you died!\n\nTo start a new game, just press the Space bar...", "SnakeWPF");
+            SpeakEndOfGameInfo(isNewHighscore);
+        }
+
+        private void SpeakEndOfGameInfo(bool isNewHighscore)
+        {
+            PromptBuilder promptBuilder = new PromptBuilder();
+
+            promptBuilder.StartStyle(new PromptStyle()
+            {
+                Emphasis = PromptEmphasis.Reduced,
+                Rate = PromptRate.Slow,
+                Volume = PromptVolume.ExtraLoud
+            });
+            promptBuilder.AppendText("oh no");
+            promptBuilder.AppendBreak(TimeSpan.FromMilliseconds(200));
+            promptBuilder.AppendText("you died");
+            promptBuilder.EndStyle();
+
+            if (isNewHighscore)
+            {
+                promptBuilder.AppendBreak(TimeSpan.FromMilliseconds(500));
+                promptBuilder.StartStyle(new PromptStyle()
+                {
+                    Emphasis = PromptEmphasis.Moderate,
+                    Rate = PromptRate.Medium,
+                    Volume = PromptVolume.Medium
+                });
+                promptBuilder.AppendText("new high score:");
+                promptBuilder.AppendBreak(TimeSpan.FromMilliseconds(200));
+                promptBuilder.AppendTextWithHint(currentScore.ToString(), SayAs.NumberCardinal);
+                promptBuilder.EndStyle();
+            }
+            speechSynthesizer.SpeakAsync(promptBuilder);
         }
 
         private void EatSnakeFood()
         {
+            speechSynthesizer.SpeakAsync("yummy");
             snakeLength++;
             currentScore++;
             int timerInterval = Math.Max(SnakeSpeedThreshold, (int)gameTickTimer.Interval.TotalMilliseconds - (currentScore * 2));
@@ -314,7 +374,88 @@ namespace SnakeGAME
 
         private void UpdateGameStatus()
         {
-            Title = "SnakeWPF - Score: " + currentScore + " - Game speed: " + gameTickTimer.Interval.TotalMilliseconds;
+            tbStatusScore.Text = currentScore.ToString();
+            tbStatusSpeed.Text = gameTickTimer.Interval.TotalMilliseconds.ToString();
         }
+
+        private void Window_MouseDown(object sender, MouseButtonEventArgs e)
+        {
+            DragMove();
+        }
+
+        private void BtnClose_Click(object sender, RoutedEventArgs e)
+        {
+            Close();
+        }
+
+        private void BtnShowHighscoreList_Click(object sender, RoutedEventArgs e)
+        {
+            bdrWelcomeMessage.Visibility = Visibility.Collapsed;
+            bdrHighscoreList.Visibility = Visibility.Visible;
+        }
+
+        public ObservableCollection<SnakeHighscore> HighscoreList
+        {
+            get; set;
+        } = new ObservableCollection<SnakeHighscore>();
+
+        private void LoadHighscoreList()
+        {
+            if (File.Exists("snake_highscorelist.xml"))
+            {
+                XmlSerializer serializer = new XmlSerializer(typeof(List<SnakeHighscore>));
+                using (Stream reader = new FileStream("snake_highscorelist.xml", FileMode.Open))
+                {
+                    List<SnakeHighscore> tempList = (List<SnakeHighscore>)serializer.Deserialize(reader);
+                    HighscoreList.Clear();
+                    foreach (var item in tempList.OrderByDescending(x => x.Score))
+                    {
+                        HighscoreList.Add(item);
+                    }
+                }
+            }
+        }
+
+        private void SaveHighscoreList()
+        {
+            XmlSerializer serializer = new XmlSerializer(typeof(ObservableCollection<SnakeHighscore>));
+            using (Stream writer = new FileStream("snake_highscorelist.xml", FileMode.Create))
+            {
+                serializer.Serialize(writer, HighscoreList);
+            }
+        }
+
+        private void BtnAddToHighscoreList_Click(object sender, RoutedEventArgs e)
+        {
+            int newIndex = 0;
+            // Where should the new entry be inserted?
+            if ((this.HighscoreList.Count > 0) && (currentScore < this.HighscoreList.Max(x => x.Score)))
+            {
+                SnakeHighscore justAbove = this.HighscoreList.OrderByDescending(x => x.Score).First(x => x.Score >= currentScore);
+                if (justAbove != null)
+                    newIndex = this.HighscoreList.IndexOf(justAbove) + 1;
+            }
+            // Create & insert the new entry
+            this.HighscoreList.Insert(newIndex, new SnakeHighscore()
+            {
+                PlayerName = txtPlayerName.Text,
+                Score = currentScore
+            });
+            // Make sure that the amount of entries does not exceed the maximum
+            while (this.HighscoreList.Count > MaxHighscoreListEntryCount)
+                this.HighscoreList.RemoveAt(MaxHighscoreListEntryCount);
+
+            SaveHighscoreList();
+
+            bdrNewHighscore.Visibility = Visibility.Collapsed;
+            bdrHighscoreList.Visibility = Visibility.Visible;
+        }
+    }
+
+    public class SnakeHighscore
+    {
+        public string PlayerName { get; set; }
+
+        public int Score { get; set; }
     }
 }
